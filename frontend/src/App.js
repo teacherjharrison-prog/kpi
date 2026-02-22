@@ -6,7 +6,9 @@ import History from './components/History';
 import Settings, { getStoredSettings } from './components/Settings';
 import { LayoutDashboard, Plus, Clock, Settings as SettingsIcon } from 'lucide-react';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL || '';
+const API_URL = process.env.REACT_APP_BACKEND_URL || 'MISSING_BACKEND_URL';
+
+alert("API_URL is: " + API_URL);
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -171,8 +173,11 @@ function App() {
         )}
         {activeTab === 'settings' && (
           <Settings 
-            onSettingsChange={(newSettings) => setCustomSettings(newSettings)}
-          />
+           goals={goals}
+  setGoals={setGoals}
+  onSettingsChange={(newSettings) => setCustomSettings(newSettings)}
+/>
+        
         )}
       </main>
     </div>
