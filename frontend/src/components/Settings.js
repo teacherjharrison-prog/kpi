@@ -18,6 +18,7 @@ const DEFAULT_GOALS = {
 
 const DEFAULT_CONVERSION = {
   exchange_rate: 15.86,
+  processing_fee_percent: 17, // 17% processing fee
   period_fee: 100
 };
 
@@ -62,6 +63,28 @@ function Settings({ goals, setGoals, onSettingsChange }) {
     if (onSettingsChange) onSettingsChange({ goals: DEFAULT_GOALS, conversion: DEFAULT_CONVERSION });
   };
 
+  // Helper function to convert USD to Pesos with 17% fee
+  const convertToPesos = (usdAmount) => {
+    if (!usdAmount || !conversion.exchange_rate) return 0;
+    const baseConversion = usdAmount * conversion.exchange_rate;
+    const processingFee = baseConversion * (conversion.processing_fee_percent / 100);
+    return baseConversion + processingFee;
+  };
+
+  // Helper function to get conversion breakdown
+  const getConversionBreakdown = (usdAmount) => {
+    if (!usdAmount || !conversion.exchange_rate) {
+      return { base: 0, fee: 0, total: 0 };
+    }
+    const base = usdAmount * conversion.exchange_rate;
+    const fee = base * (conversion.processing_fee_percent / 100);
+    return {
+      base: base,
+      fee: fee,
+      total: base + fee
+    };
+  };
+
   const GoalInput = ({ label, icon: Icon, value, onChange, prefix = '' }) => (
     <div className="form-group">
       <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -85,6 +108,10 @@ function Settings({ goals, setGoals, onSettingsChange }) {
     </div>
   );
 
+  // Example calculation for display
+  const exampleAmount = 100;
+  const exampleBreakdown = getConversionBreakdown(exampleAmount);
+
   return (
     <div data-testid="settings">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
@@ -106,12 +133,61 @@ function Settings({ goals, setGoals, onSettingsChange }) {
         <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', color: '#92400E' }}>
           <DollarSign size={20} /> Peso Conversion Settings
         </h3>
-        <div className="grid grid-2" style={{ gap: '1rem' }}>
-          <GoalInput label="Exchange Rate (USD → MXN)" value={conversion.exchange_rate} onChange={(v) => handleConversionChange('exchange_rate', v)} />
-          <GoalInput label="Period Fee (Pesos)" value={conversion.period_fee} onChange={(v) => handleConversionChange('period_fee', v)} prefix="$" />
+        <div className="grid grid-3" style={{ gap: '1rem' }}>
+          <GoalInput 
+            label="Exchange Rate (USD → MXN)" 
+            value={conversion.exchange_rate} 
+            onChange={(v) => handleConversionChange('exchange_rate', v)} 
+          />
+          <GoalInput 
+            label="Processing Fee (%)" 
+            value={conversion.processing_fee_percent} 
+            onChange={(v) => handleConversionChange('processing_fee_percent', v)} 
+            prefix="%" 
+          />
+          <GoalInput 
+            label="Period Fee (Pesos)" 
+            value={conversion.period_fee} 
+            onChange={(v) => handleConversionChange('period_fee', v)} 
+            prefix="$" 
+          />
         </div>
+        
+        {/* Conversion Example Display */}
+        <div style={{ 
+          marginTop: '1rem', 
+          padding: '1rem', 
+          background: 'white', 
+          borderRadius: '8px',
+          border: '1px solid #F59E0B'
+        }}>
+          <p style={{ fontSize: '0.875rem', color: '#92400E', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            Conversion Example (${exampleAmount} USD):
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem', fontSize: '0.875rem' }}>
+            <div>
+              <span style={{ color: 'var(--text-tertiary)' }}>Base Rate:</span>
+              <div style={{ fontWeight: 'bold', color: '#92400E' }}>
+                ${exampleBreakdown.base.toFixed(2)} MXN
+              </div>
+            </div>
+            <div>
+              <span style={{ color: 'var(--text-tertiary)' }}>+ {conversion.processing_fee_percent}% Fee:</span>
+              <div style={{ fontWeight: 'bold', color: '#92400E' }}>
+                ${exampleBreakdown.fee.toFixed(2)} MXN
+              </div>
+            </div>
+            <div>
+              <span style={{ color: 'var(--text-tertiary)' }}>Total:</span>
+              <div style={{ fontWeight: 'bold', color: '#92400E', fontSize: '1.1rem' }}>
+                ${exampleBreakdown.total.toFixed(2)} MXN
+              </div>
+            </div>
+          </div>
+        </div>
+
         <p style={{ fontSize: '0.875rem', color: '#92400E', marginTop: '1rem' }}>
-          Current: $1 USD = ${conversion.exchange_rate} MXN | Period fee: ${conversion.period_fee} MXN
+          Rate: $1 USD = ${conversion.exchange_rate} MXN + {conversion.processing_fee_percent}% fee | Period fee: ${conversion.period_fee} MXN
         </p>
       </div>
 
@@ -150,6 +226,7 @@ function Settings({ goals, setGoals, onSettingsChange }) {
 // EXPORTS
 export default Settings;
 
+// Helper functions for use in other components
 export const getStoredSettings = () => {
   const savedGoals = localStorage.getItem('kpi_goals');
   const savedConversion = localStorage.getItem('kpi_conversion');
@@ -158,3 +235,27 @@ export const getStoredSettings = () => {
     conversion: savedConversion ? JSON.parse(savedConversion) : DEFAULT_CONVERSION,
   };
 };
+
+// Conversion helper that can be imported in other components
+export const convertUsdToPesos = (usdAmount, conversionSettings) => {
+  if (!usdAmount || !conversionSettings?.exchange_rate) return 0;
+  const base = usdAmount * conversionSettings.exchange_rate;
+  const feePercent = conversionSettings.processing_fee_percent || 17;
+  const fee = base * (feePercent / 100);
+  return base + fee;
+};
+
+export const getConversionBreakdown = (usdAmount, conversionSettings) => {
+  if (!usdAmount || !conversionSettings?.exchange_rate) {
+    return { base: 0, fee: 0, total: 0 };
+  }
+  const base = usdAmount * conversionSettings.exchange_rate;
+  const feePercent = conversionSettings.processing_fee_percent || 17;
+  const fee = base * (feePercent / 100);
+  return {
+    base: base,
+    fee: fee,
+    total: base + fee
+  };
+};
+

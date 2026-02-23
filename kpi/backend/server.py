@@ -129,9 +129,16 @@ def check_feature_access(user: "User", feature: str) -> dict:
         "description": feat["description"],
     }
 
-# MongoDB connection
+# =============================================================================
+# MongoDB CONNECTION - FIXED: Added db_name
+# =============================================================================
+
 mongo_url = os.environ.get("MONGO_URL")
-print(f"DEBUG: MONGO_URL = {mongo_url}")  # Add this line
+print(f"DEBUG: MONGO_URL = {mongo_url}")
+
+# FIX 1: Define db_name (was missing!)
+db_name = os.environ.get("DB_NAME", "kpi_tracker")
+
 if not mongo_url:
     raise ValueError("MONGO_URL is not set in environment variables!")
 client = AsyncIOMotorClient(mongo_url)
@@ -143,9 +150,6 @@ api_router = APIRouter(prefix="/api")
 # =============================================================================
 # PERIOD LOGIC - Calendar-based, no week nonsense
 # =============================================================================
-# Period A: 1st → 14th
-# Period B: 15th → last day of month
-# Period ID format: YYYY-MM-01_to_YYYY-MM-14 or YYYY-MM-15_to_YYYY-MM-<last>
 
 def get_last_day_of_month(year: int, month: int) -> int:
     """Get the last day of a given month"""
@@ -263,8 +267,8 @@ class MiscIncomeCreate(BaseModel):
 class DailyEntry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     date: str
-    period_id: str = ""  # Links entry to its period
-    archived: bool = False  # True when period is closed
+    period_id: str = ""
+    archived: bool = False
     calls_received: int = 0
     bookings: List[Booking] = []
     spins: List[SpinEntry] = []
@@ -353,13 +357,13 @@ class GoalsMet(BaseModel):
 
 class PeriodLog(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    period_id: str  # "2026-02-01_to_2026-02-14"
+    period_id: str
     start_date: str
     end_date: str
-    status: str = "closed"  # "open" | "closed"
-    entry_count: int = 0  # Number of daily entries
+    status: str = "closed"
+    entry_count: int = 0
     totals: PeriodTotals
-    goals: dict  # Snapshot of goals at archive time
+    goals: dict
     goals_met: GoalsMet
     conversion_rate: float = 0.0
     avg_time_per_booking: float = 0.0
@@ -417,31 +421,25 @@ def normalize_entry(entry: dict, period_id: str = "") -> dict:
     }
 
 # =============================================================================
-# LAZY PERIOD CLOSING - Closes previous period on first access to new period
+# LAZY PERIOD CLOSING
 # =============================================================================
 
 async def ensure_previous_period_closed():
-    """
-    Lazy evaluation: On first write/read of new period, close the previous one.
-    Called automatically by stats and entry endpoints.
-    """
+    """Lazy evaluation: On first write/read of new period, close the previous one."""
     if not is_period_boundary():
-        return  # Not a boundary day, nothing to do
+        return
     
     prev_start, prev_end, prev_period_id = get_previous_period()
     
-    # Check if previous period already archived
     existing = await db.period_logs.find_one({"period_id": prev_period_id})
     if existing:
-        return  # Already closed
+        return
     
-    # Archive the previous period
     await archive_period_internal(prev_start, prev_end, prev_period_id)
 
 async def archive_period_internal(start_date: str, end_date: str, period_id: str) -> PeriodLog:
     """Internal function to archive a period"""
     
-    # Get all entries for this period (both by date range and period_id)
     entries = await db.daily_entries.find({
         "$or": [
             {"date": {"$gte": start_date, "$lte": end_date}},
@@ -451,7 +449,6 @@ async def archive_period_internal(start_date: str, end_date: str, period_id: str
     
     entries = [normalize_entry(e, period_id) for e in entries]
     
-    # Calculate totals
     total_calls = sum(e.get("calls_received", 0) for e in entries)
     all_bookings = []
     all_spins = []
@@ -478,7 +475,6 @@ async def archive_period_internal(start_date: str, end_date: str, period_id: str
     avg_time = sum(all_times) / len(all_times) if all_times else 0
     conversion = (total_bookings / total_calls * 100) if total_calls > 0 else 0
     
-    # Create period log
     period_log = PeriodLog(
         period_id=period_id,
         start_date=start_date,
@@ -508,10 +504,8 @@ async def archive_period_internal(start_date: str, end_date: str, period_id: str
         avg_time_per_booking=round(avg_time, 1),
     )
     
-    # Save to database
     await db.period_logs.insert_one(period_log.dict())
     
-    # Mark all entries in this period as archived
     await db.daily_entries.update_many(
         {"date": {"$gte": start_date, "$lte": end_date}},
         {"$set": {"archived": True, "period_id": period_id}}
@@ -520,16 +514,13 @@ async def archive_period_internal(start_date: str, end_date: str, period_id: str
     return period_log
 
 # =============================================================================
-# SCHEDULED CRON JOB - Automatic Period Archiving
+# SCHEDULED CRON JOBS - FIXED: Added daily reset
 # =============================================================================
 
 scheduler = AsyncIOScheduler()
 
 async def close_period_cron_task():
-    """
-    Cron job that runs daily at midnight.
-    If today is day 1 or 15 (start of new period), archive the previous period.
-    """
+    """Cron job: Archive previous period on 1st and 15th"""
     logger.info("Running scheduled period check...")
     today = date.today()
     
@@ -539,26 +530,74 @@ async def close_period_cron_task():
     
     logger.info(f"Today is day {today.day} - period boundary detected!")
     
-    # Get previous period info
     prev_start, prev_end, prev_period_id = get_previous_period()
     
-    # Check if already archived
     existing = await db.period_logs.find_one({"period_id": prev_period_id})
     if existing:
         logger.info(f"Period {prev_period_id} already archived. Skipping.")
         return
     
-    # Archive the previous period
     logger.info(f"Archiving period: {prev_period_id}")
     try:
         period_log = await archive_period_internal(prev_start, prev_end, prev_period_id)
-        logger.info(f"Successfully archived period {prev_period_id} with {period_log.entry_count} entries")
+        logger.info(f"Successfully archived period {prev_period_id}")
     except Exception as e:
         logger.error(f"Failed to archive period {prev_period_id}: {e}")
 
+# FIX 2: NEW FUNCTION - Daily reset at midnight
+async def daily_reset_cron_task():
+    """
+    Runs every day at midnight.
+    Archives yesterday's stats and resets daily counters.
+    """
+    logger.info("Running daily midnight reset...")
+    
+    today_str = date.today().isoformat()
+    yesterday = date.today() - timedelta(days=1)
+    yesterday_str = yesterday.isoformat()
+    
+    # Archive yesterday's entry if it exists
+    yesterday_entry = await db.daily_entries.find_one({"date": yesterday_str})
+    if yesterday_entry:
+        await db.daily_archives.insert_one({
+            "date": yesterday_str,
+            "entry": yesterday_entry,
+            "archived_at": datetime.utcnow()
+        })
+        logger.info(f"Archived entry for {yesterday_str}")
+    
+    # Reset today's entry counters
+    today_entry = await db.daily_entries.find_one({"date": today_str})
+    if today_entry:
+        # Archive current state before reset
+        await db.daily_archives.insert_one({
+            "date": f"{today_str}_pre_reset",
+            "entry": today_entry,
+            "archived_at": datetime.utcnow()
+        })
+        
+        # Reset counters
+        await db.daily_entries.update_one(
+            {"date": today_str},
+            {
+                "$set": {
+                    "calls_received": 0,
+                    "bookings": [],
+                    "spins": [],
+                    "misc_income": [],
+                    "updated_at": datetime.utcnow(),
+                    "reset_at": datetime.utcnow()
+                }
+            }
+        )
+        logger.info(f"Reset daily counters for {today_str}")
+    
+    logger.info("Daily reset complete")
+
+# FIX 3: Updated start_scheduler with daily reset job
 def start_scheduler():
     """Initialize and start the APScheduler"""
-    # Schedule to run every day at midnight
+    # Period archiver - runs at midnight
     scheduler.add_job(
         close_period_cron_task,
         CronTrigger(hour=0, minute=0),
@@ -566,20 +605,25 @@ def start_scheduler():
         name='Archive previous period at midnight on 1st and 15th',
         replace_existing=True
     )
+    
+    # NEW: Daily reset job - also runs at midnight
+    scheduler.add_job(
+        daily_reset_cron_task,
+        CronTrigger(hour=0, minute=0),
+        id='daily_reset',
+        name='Daily stats reset at midnight',
+        replace_existing=True
+    )
+    
     scheduler.start()
-    logger.info("APScheduler started - period archiver scheduled for midnight daily")
+    logger.info("APScheduler started - period archiver and daily reset scheduled")
 
 # =============================================================================
-# ONE-TIME MIGRATION - Assign legacy data to periods
+# ONE-TIME MIGRATION
 # =============================================================================
 
 async def migrate_legacy_entries() -> dict:
-    """
-    One-time migration: Assign existing entries without period_id to their
-    correct calendar-based periods. Mark them as archived and create
-    period logs for historical data.
-    """
-    # Find all entries without a period_id or with archived=False
+    """Assign existing entries without period_id to their correct periods."""
     legacy_entries = await db.daily_entries.find({
         "$or": [
             {"period_id": {"$exists": False}},
@@ -591,8 +635,7 @@ async def migrate_legacy_entries() -> dict:
     if not legacy_entries:
         return {"migrated_entries": 0, "periods_created": 0, "message": "No legacy entries found"}
     
-    # Group entries by their calculated period
-    periods_map = {}  # period_id -> list of entries
+    periods_map = {}
     
     for entry in legacy_entries:
         entry_date_str = entry.get("date")
@@ -608,7 +651,6 @@ async def migrate_legacy_entries() -> dict:
         month = entry_date.month
         day = entry_date.day
         
-        # Determine which period this entry belongs to
         if day <= 14:
             start = date(year, month, 1)
             end = date(year, month, 14)
@@ -627,18 +669,13 @@ async def migrate_legacy_entries() -> dict:
             }
         periods_map[period_id]["entries"].append(entry)
     
-    # Get current period to avoid archiving it
     _, _, current_period_id = get_current_period()
     
-    # Process each period
     migrated_count = 0
     periods_created = 0
     
     for period_id, period_data in periods_map.items():
-        # Update all entries in this period
         entry_ids = [e.get("_id") for e in period_data["entries"]]
-        
-        # Don't archive current period entries
         should_archive = period_id != current_period_id
         
         await db.daily_entries.update_many(
@@ -650,7 +687,6 @@ async def migrate_legacy_entries() -> dict:
         )
         migrated_count += len(entry_ids)
         
-        # Create period log if this is a past period (not current)
         if should_archive:
             existing_log = await db.period_logs.find_one({"period_id": period_id})
             if not existing_log:
@@ -672,27 +708,21 @@ async def migrate_legacy_entries() -> dict:
     }
 
 # =============================================================================
-# WEBHOOK ENDPOINTS - For Softphone/External Integrations
+# WEBHOOK ENDPOINTS
 # =============================================================================
 
 class WebhookCallEvent(BaseModel):
-    """Payload for incoming call webhook"""
-    event_type: str = "call_received"  # call_received, call_ended, call_missed
+    event_type: str = "call_received"
     timestamp: Optional[datetime] = None
-    duration: Optional[int] = None  # seconds
+    duration: Optional[int] = None
     caller_id: Optional[str] = None
-    api_key: Optional[str] = None  # Optional authentication
+    api_key: Optional[str] = None
 
-# Simple API key for webhook auth (set in environment or leave empty to disable)
 WEBHOOK_API_KEY = os.environ.get('WEBHOOK_API_KEY', '')
 
 @api_router.post("/webhook/call")
 async def webhook_call_received(event: WebhookCallEvent = None):
-    """
-    Webhook endpoint for softphone integration (Pro/Group plan only).
-    Automatically increments today's call count.
-    """
-    # Check plan - only Pro or Group can use webhook
+    """Webhook endpoint for softphone integration."""
     user = get_current_user_sync()
     if user.plan not in ["pro", "group"]:
         raise HTTPException(
@@ -703,7 +733,6 @@ async def webhook_call_received(event: WebhookCallEvent = None):
     today_str = date.today().isoformat()
     _, _, current_period_id = get_current_period()
     
-    # Increment call count
     result = await db.daily_entries.find_one_and_update(
         {"date": today_str},
         {
@@ -740,7 +769,7 @@ async def webhook_test():
         "usage": {
             "endpoint": "POST /api/webhook/call",
             "description": "Increments today's call count by 1",
-            "auth": "Optional - set WEBHOOK_API_KEY env var to require authentication"
+            "auth": "Optional - set WEBHOOK_API_KEY env var"
         }
     }
 
@@ -794,7 +823,6 @@ async def get_current_period_info():
     start, end, period_id = get_current_period()
     prev_start, prev_end, prev_period_id = get_previous_period()
     
-    # Check if previous period is archived
     prev_archived = await db.period_logs.find_one({"period_id": prev_period_id})
     
     return {
@@ -811,10 +839,9 @@ async def get_current_period_info():
 
 @api_router.post("/periods/archive")
 async def archive_current_period():
-    """Manually archive the current period (usually done automatically)"""
+    """Manually archive the current period"""
     start, end, period_id = get_current_period()
     
-    # Check if already archived
     existing = await db.period_logs.find_one({"period_id": period_id})
     if existing:
         raise HTTPException(status_code=400, detail="Period already archived")
@@ -836,13 +863,13 @@ async def archive_previous_period():
 
 @api_router.get("/periods", response_model=List[PeriodLog])
 async def get_period_logs():
-    """Get all archived period logs - immutable snapshots"""
+    """Get all archived period logs"""
     logs = await db.period_logs.find().sort("start_date", -1).to_list(100)
     return [PeriodLog(**log) for log in logs]
 
 @api_router.get("/periods/{period_id}", response_model=PeriodLog)
 async def get_period_log(period_id: str):
-    """Get a specific archived period - immutable snapshot, not recomputed"""
+    """Get a specific archived period"""
     log = await db.period_logs.find_one({"period_id": period_id})
     if not log:
         raise HTTPException(status_code=404, detail="Period log not found")
@@ -854,7 +881,6 @@ async def get_period_log(period_id: str):
 
 @api_router.get("/entries/today", response_model=DailyEntry)
 async def get_today_entry():
-    # Lazy close previous period if needed
     await ensure_previous_period_closed()
     
     today_str = date.today().isoformat()
@@ -930,6 +956,7 @@ async def add_booking(entry_date: str, booking: BookingCreate):
     )
     return DailyEntry(**normalize_entry(result, current_period_id))
 
+# DELETE BOOKING ENDPOINT - Already exists! ✅
 @api_router.delete("/entries/{entry_date}/bookings/{booking_id}", response_model=DailyEntry)
 async def delete_booking(entry_date: str, booking_id: str):
     result = await db.daily_entries.find_one_and_update(
@@ -1055,16 +1082,11 @@ async def get_daily_stats(entry_date: str):
 
 @api_router.get("/stats/biweekly", response_model=BiweeklyStats)
 async def get_biweekly_stats():
-    """
-    Returns stats for CURRENT OPEN PERIOD ONLY.
-    For archived periods, use GET /periods/{period_id}
-    """
-    # Lazy close previous period
+    """Returns stats for CURRENT OPEN PERIOD ONLY."""
     await ensure_previous_period_closed()
     
     start_date, end_date, period_id = get_current_period()
     
-    # Only get non-archived entries in current period
     entries = await db.daily_entries.find({
         "date": {"$gte": start_date, "$lte": end_date},
         "archived": {"$ne": True}
@@ -1072,7 +1094,6 @@ async def get_biweekly_stats():
     
     entries = [normalize_entry(e, period_id) for e in entries]
     
-    # Aggregate
     total_calls = sum(e.get("calls_received", 0) for e in entries)
     all_bookings = []
     all_spins = []
@@ -1152,30 +1173,22 @@ app.add_middleware(
 )
 
 # =============================================================================
-# MIGRATION ENDPOINT
+# MIGRATION & ADMIN ENDPOINTS
 # =============================================================================
 
 @api_router.post("/admin/migrate-legacy")
 async def run_migration():
-    """
-    One-time migration endpoint: Assigns all existing entries to their
-    correct calendar-based periods and creates period logs for historical data.
-    Safe to run multiple times - it only processes entries without period_id.
-    """
+    """One-time migration endpoint"""
     result = await migrate_legacy_entries()
     return result
 
 @api_router.post("/admin/force-archive")
 async def force_archive_period():
-    """
-    Force archive the previous period - useful for manual testing or
-    if the cron job missed a boundary.
-    """
+    """Force archive the previous period"""
     prev_start, prev_end, prev_period_id = get_previous_period()
     
     existing = await db.period_logs.find_one({"period_id": prev_period_id})
     if existing:
-        # Convert ObjectId and datetime for JSON serialization
         existing_clean = {
             "id": existing.get("id", ""),
             "period_id": existing.get("period_id", ""),
@@ -1227,10 +1240,7 @@ async def get_scheduler_status():
 
 @api_router.delete("/admin/periods/{period_id}")
 async def delete_period_log(period_id: str):
-    """
-    Admin endpoint to delete a period log (for testing/cleanup only).
-    In production, this should be protected or removed.
-    """
+    """Admin endpoint to delete a period log"""
     result = await db.period_logs.delete_one({"period_id": period_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Period log not found")

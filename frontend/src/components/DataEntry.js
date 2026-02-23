@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Phone, DollarSign, Gift, Plus, Check, Loader, Play, Pause, RotateCcw, Timer } from 'lucide-react';
 
 function DataEntry({ todayEntry, onUpdate, apiUrl, timer }) {
@@ -14,6 +14,13 @@ function DataEntry({ todayEntry, onUpdate, apiUrl, timer }) {
   const [spin, setSpin] = useState({ amount: '', is_mega: false, booking_number: '' });
   const [misc, setMisc] = useState({ amount: '', source: 'request_lead', description: '' });
 
+  // Sync calls with todayEntry when it changes
+  useEffect(() => {
+    if (todayEntry?.calls_received !== undefined) {
+      setCalls(todayEntry.calls_received);
+    }
+  }, [todayEntry]);
+
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -21,93 +28,116 @@ function DataEntry({ todayEntry, onUpdate, apiUrl, timer }) {
   };
 
   const showSuccess = (key) => {
-    setSuccess({ ...success, [key]: true });
-    setTimeout(() => setSuccess({ ...success, [key]: false }), 2000);
+    setSuccess(prev => ({ ...prev, [key]: true }));
+    setTimeout(() => setSuccess(prev => ({ ...prev, [key]: false })), 2000);
   };
 
   const updateCalls = async () => {
-    setLoading({ ...loading, calls: true });
+    setLoading(prev => ({ ...prev, calls: true }));
     try {
-      await fetch(`${apiUrl}/api/entries/${today}/calls?calls_received=${calls}`, { method: 'PUT' });
+      const response = await fetch(`${apiUrl}/api/entries/${today}/calls?calls_received=${calls}`, { 
+        method: 'PUT' 
+      });
+      if (!response.ok) throw new Error('Failed to update calls');
       showSuccess('calls');
       onUpdate();
     } catch (err) {
-      alert('Failed to update calls');
+      alert('Failed to update calls: ' + err.message);
     }
-    setLoading({ ...loading, calls: false });
+    setLoading(prev => ({ ...prev, calls: false }));
   };
 
   const addBooking = async () => {
     if (!booking.profit) return alert('Enter profit amount');
-    setLoading({ ...loading, booking: true });
+    setLoading(prev => ({ ...prev, booking: true }));
     
-    // Use timer value for time_since_last (convert to minutes)
-    const timeMinutes = Math.floor(timerSeconds / 60);
+    // Use timer value for time_since_last (convert to minutes), fallback to input
+    const timeMinutes = booking.time_since_last 
+      ? parseInt(booking.time_since_last) 
+      : Math.floor(timerSeconds / 60);
     
     try {
-      await fetch(`${apiUrl}/api/entries/${today}/bookings`, {
+      const response = await fetch(`${apiUrl}/api/entries/${today}/bookings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           profit: parseFloat(booking.profit),
           is_prepaid: booking.is_prepaid,
           has_refund_protection: booking.has_refund_protection,
-          time_since_last: booking.time_since_last ? parseInt(booking.time_since_last) : timeMinutes
+          time_since_last: timeMinutes,
+          created_at: new Date().toISOString() // Add timestamp
         })
       });
+      
+      if (!response.ok) throw new Error('Failed to add booking');
+      
+      // Reset form
       setBooking({ profit: '', is_prepaid: false, has_refund_protection: false, time_since_last: '' });
+      
       // Reset timer and auto-start for next booking
-      if (resetAndStartTimer) resetAndStartTimer();
+      if (resetAndStartTimer) {
+        resetAndStartTimer();
+      }
+      
       showSuccess('booking');
-      onUpdate();
+      onUpdate(); // Refresh dashboard data immediately
+      
     } catch (err) {
-      alert('Failed to add booking');
+      alert('Failed to add booking: ' + err.message);
     }
-    setLoading({ ...loading, booking: false });
+    setLoading(prev => ({ ...prev, booking: false }));
   };
 
   const addSpin = async () => {
     if (!spin.amount) return alert('Enter spin amount');
-    setLoading({ ...loading, spin: true });
+    setLoading(prev => ({ ...prev, spin: true }));
     try {
-      await fetch(`${apiUrl}/api/entries/${today}/spins`, {
+      const response = await fetch(`${apiUrl}/api/entries/${today}/spins`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           amount: parseFloat(spin.amount),
           is_mega: spin.is_mega,
-          booking_number: parseInt(spin.booking_number) || 0
+          booking_number: parseInt(spin.booking_number) || 0,
+          created_at: new Date().toISOString()
         })
       });
+      
+      if (!response.ok) throw new Error('Failed to add spin');
+      
       setSpin({ amount: '', is_mega: false, booking_number: '' });
       showSuccess('spin');
       onUpdate();
     } catch (err) {
-      alert('Failed to add spin');
+      alert('Failed to add spin: ' + err.message);
     }
-    setLoading({ ...loading, spin: false });
+    setLoading(prev => ({ ...prev, spin: false }));
   };
 
   const addMisc = async () => {
     if (!misc.amount) return alert('Enter amount');
-    setLoading({ ...loading, misc: true });
+    setLoading(prev => ({ ...prev, misc: true }));
     try {
-      await fetch(`${apiUrl}/api/entries/${today}/misc`, {
+      const response = await fetch(`${apiUrl}/api/entries/${today}/misc`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           amount: parseFloat(misc.amount),
           source: misc.source,
-          description: misc.description
+          description: misc.description,
+          created_at: new Date().toISOString()
         })
       });
+      
+      if (!response.ok) throw new Error('Failed to add misc income');
+      
       setMisc({ amount: '', source: 'request_lead', description: '' });
       showSuccess('misc');
       onUpdate();
     } catch (err) {
-      alert('Failed to add misc income');
+      alert('Failed to add misc income: ' + err.message);
     }
-    setLoading({ ...loading, misc: false });
+    setLoading(prev => ({ ...prev, misc: false }));
   };
 
   const ButtonContent = ({ loading: isLoading, success: isSuccess, children }) => {
@@ -218,11 +248,16 @@ function DataEntry({ todayEntry, onUpdate, apiUrl, timer }) {
             />
           </div>
           <div className="form-group" style={{ marginTop: '0.75rem' }}>
-            <label className="form-label">Time Since Last (min)</label>
+            <label className="form-label">
+              Time Since Last (min) 
+              <span style={{ fontSize: '0.75rem', color: '#666', marginLeft: '0.5rem' }}>
+                (Auto: {Math.floor(timerSeconds / 60)} min)
+              </span>
+            </label>
             <input
               type="number"
               className="form-input"
-              placeholder="30"
+              placeholder="Leave empty to use timer"
               value={booking.time_since_last}
               onChange={(e) => setBooking({ ...booking, time_since_last: e.target.value })}
               data-testid="booking-time-input"
