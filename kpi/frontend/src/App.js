@@ -1,180 +1,102 @@
-import React, { useState, useEffect, useRef } from 'react';
-import './App.css';
+import React, { useState, useEffect } from 'react';
 import Dashboard from './components/Dashboard';
-import DataEntry from './components/DataEntry';
-import History from './components/History';
-import Settings, { getStoredSettings } from './components/Settings';
-import { LayoutDashboard, Plus, Clock, Settings as SettingsIcon } from 'lucide-react';
+import ForecastDashboard from './components/ForecastDashboard';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL || '';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [stats, setStats] = useState(null);
-  const [todayEntry, setTodayEntry] = useState(null);
-  const [periodInfo, setPeriodInfo] = useState(null);
-  const [goals, setGoals] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [customSettings, setCustomSettings] = useState(getStoredSettings());
 
-  // SHARED TIMER STATE - lives in App, passed to children
-  const [timerSeconds, setTimerSeconds] = useState(0);
-  const [isTimerRunning, setIsTimerRunning] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
-  const timerRef = useRef(null);
+  // Existing dashboard state (keep whatever you already had)
+  const [dashboardData, setDashboardData] = useState(null);
 
-  // Load timer from localStorage on mount
-  useEffect(() => {
-    const saved = localStorage.getItem('kpi_timer');
-    if (saved) {
-      const { seconds, running, paused, lastUpdate } = JSON.parse(saved);
-      if (running && !paused) {
-        const elapsed = Math.floor((Date.now() - lastUpdate) / 1000);
-        setTimerSeconds(seconds + elapsed);
-        setIsTimerRunning(true);
-      } else {
-        setTimerSeconds(seconds);
-        setIsPaused(paused);
-        setIsTimerRunning(running);
-      }
-    }
-  }, []);
+  // 🔮 Forecast State
+  const [teamForecast, setTeamForecast] = useState(null);
+  const [topSignals, setTopSignals] = useState([]);
 
-  // Timer tick
-  useEffect(() => {
-    if (isTimerRunning && !isPaused) {
-      timerRef.current = setInterval(() => {
-        setTimerSeconds(prev => prev + 1);
-      }, 1000);
-    } else {
-      clearInterval(timerRef.current);
-    }
-    return () => clearInterval(timerRef.current);
-  }, [isTimerRunning, isPaused]);
-
-  // Save timer state to localStorage
-  useEffect(() => {
-    localStorage.setItem('kpi_timer', JSON.stringify({
-      seconds: timerSeconds,
-      running: isTimerRunning,
-      paused: isPaused,
-      lastUpdate: Date.now()
-    }));
-  }, [timerSeconds, isTimerRunning, isPaused]);
-
-  // Timer controls
-  const startTimer = () => { setIsTimerRunning(true); setIsPaused(false); };
-  const pauseTimer = () => { setIsPaused(true); };
-  const resumeTimer = () => { setIsPaused(false); };
-  const stopTimer = () => { setTimerSeconds(0); setIsTimerRunning(false); setIsPaused(false); };
-  const resetAndStartTimer = () => { setTimerSeconds(0); setIsTimerRunning(true); setIsPaused(false); };
-
-  const timerProps = {
-    timerSeconds,
-    isTimerRunning,
-    isPaused,
-    startTimer,
-    pauseTimer,
-    resumeTimer,
-    stopTimer,
-    resetAndStartTimer,
-  };
-
-  const fetchData = async () => {
-    setLoading(true);
-    setError(null);
+  const fetchAllData = async () => {
     try {
-      const [statsRes, entryRes, periodRes, goalsRes] = await Promise.all([
-        fetch(`${API_URL}/api/stats/biweekly`),
-        fetch(`${API_URL}/api/entries/today`),
-        fetch(`${API_URL}/api/periods/current`),
-        fetch(`${API_URL}/api/goals`)
+      const [
+        dashboardRes,
+        forecastRes,
+        signalsRes
+      ] = await Promise.all([
+        fetch(`${API_URL}/api/dashboard`),
+        fetch(`${API_URL}/api/team/forecast`),
+        fetch(`${API_URL}/api/team/top-signals`)
       ]);
-      
-      if (!statsRes.ok || !entryRes.ok || !periodRes.ok || !goalsRes.ok) {
-        throw new Error('Failed to fetch data');
+
+      if (dashboardRes.ok) {
+        const dashData = await dashboardRes.json();
+        setDashboardData(dashData);
       }
-      
-      setStats(await statsRes.json());
-      setTodayEntry(await entryRes.json());
-      setPeriodInfo(await periodRes.json());
-      setGoals(await goalsRes.json());
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+
+      if (forecastRes.ok) {
+        const forecastData = await forecastRes.json();
+        setTeamForecast(forecastData);
+      }
+
+      if (signalsRes.ok) {
+        const signalsData = await signalsRes.json();
+        setTopSignals(signalsData);
+      }
+
+    } catch (error) {
+      console.error('Data fetch error:', error);
     }
   };
 
   useEffect(() => {
-    fetchData();
+    fetchAllData();
+
+    // 🔁 Real-time refresh every 60 seconds
+    const interval = setInterval(() => {
+      fetchAllData();
+    }, 60000);
+
+    return () => clearInterval(interval);
   }, []);
 
-  const tabs = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'add', label: 'Add Data', icon: Plus },
-    { id: 'history', label: 'History', icon: Clock },
-    { id: 'settings', label: 'Settings', icon: SettingsIcon },
-  ];
+  const renderContent = () => {
+    switch (activeTab) {
+      case 'forecast':
+        return (
+          <ForecastDashboard
+            forecast={teamForecast}
+            signals={topSignals}
+          />
+        );
+
+      case 'dashboard':
+      default:
+        return (
+          <Dashboard data={dashboardData} />
+        );
+    }
+  };
 
   return (
-    <div className="app">
-      <header className="header">
-        <div className="header-content">
-          <h1 className="logo font-display">KPI TRACKER</h1>
-          <nav className="nav">
-            {tabs.map(tab => (
-              <button
-                key={tab.id}
-                data-testid={`nav-${tab.id}`}
-                className={`nav-btn ${activeTab === tab.id ? 'active' : ''}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <tab.icon size={18} />
-                <span>{tab.label}</span>
-              </button>
-            ))}
-          </nav>
-        </div>
-      </header>
+    <div style={{ padding: '2rem' }}>
 
-      <main className="main">
-        {error && (
-          <div className="error-banner" data-testid="error-banner">
-            <span>⚠️ {error}</span>
-            <button onClick={fetchData}>Retry</button>
-          </div>
-        )}
+      {/* NAVIGATION */}
+      <div style={{ marginBottom: '2rem' }}>
+        <button
+          onClick={() => setActiveTab('dashboard')}
+          style={{ marginRight: '1rem' }}
+        >
+          Dashboard
+        </button>
 
-        {activeTab === 'dashboard' && (
-          <Dashboard 
-            stats={stats} 
-            todayEntry={todayEntry} 
-            periodInfo={periodInfo}
-            goals={goals}
-            loading={loading}
-            customSettings={customSettings}
-            timer={timerProps}
-          />
-        )}
-        {activeTab === 'add' && (
-          <DataEntry 
-            todayEntry={todayEntry} 
-            onUpdate={fetchData}
-            apiUrl={API_URL}
-            timer={timerProps}
-          />
-        )}
-        {activeTab === 'history' && (
-          <History apiUrl={API_URL} />
-        )}
-        {activeTab === 'settings' && (
-          <Settings 
-            onSettingsChange={(newSettings) => setCustomSettings(newSettings)}
-          />
-        )}
-      </main>
+        <button
+          onClick={() => setActiveTab('forecast')}
+        >
+          Forecast
+        </button>
+      </div>
+
+      {/* CONTENT */}
+      {renderContent()}
+
     </div>
   );
 }
